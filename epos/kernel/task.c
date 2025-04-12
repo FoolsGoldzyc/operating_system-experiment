@@ -20,13 +20,13 @@
 #include <stddef.h>
 #include <string.h>
 #include "kernel.h"
-
+#include "fixedptc.h"
 int g_resched;
 struct tcb *g_task_head;
 struct tcb *g_task_running;
 struct tcb *task0;
 struct tcb *g_task_own_fpu;
-
+fixedpt g_load_avg = 0.0; // 初始化系统平均负荷为0
 /**
  * CPU调度器函数，这里只实现了轮转调度算法
  *
@@ -34,31 +34,42 @@ struct tcb *g_task_own_fpu;
  */
 void schedule()
 {
-    struct tcb *select = g_task_running;
-    do {
+    struct tcb *select = g_task_head;
+    struct tcb *select_plus = g_task_running;
+    
+    while (select != NULL) {
+        select->priority = PRI_USER_MAX -
+                           fixedpt_toint(fixedpt_div(select->estcpu, fixedpt_fromint(4))) -
+                           select->nice * 2;
         select = select->next;
-        if(select == NULL)
-            select = g_task_head;
-        if(select == g_task_running)
-            break;
-        if((select->tid != 0) &&
-           (select->state == TASK_STATE_READY))
-            break;
-    } while(1);
-
-    if(select == g_task_running) {
-        if(select->state == TASK_STATE_READY)
-            return;
-        select = task0;
     }
 
-    //printk("0x%d -> 0x%d\r\n", (g_task_running == NULL) ? -1 : g_task_running->tid, select->tid);
+    // 重置select指向任务链表的头部
+    select = g_task_head;
 
-    if(select->signature != TASK_SIGNATURE)
-        printk("warning: kernel stack of task #%d overflow!!!", select->tid);
+    // 选择优先级最高且处于就绪状态的任务
+    while (select != NULL) {
+        if ((select->tid != 0) && (select->state == TASK_STATE_READY)) {
+            if (select->priority > select_plus->priority || select_plus->tid == 0) {
+                select_plus = select;
+            }
+        }
+        select = select->next;
+    }
+
+    // 如果选择的任务是当前正在运行的任务，并且其处于就绪状态，则返回
+    if (select_plus == g_task_running) {
+        if (select_plus->state == TASK_STATE_READY)
+            return;
+        select_plus = task0; // 如果没有其他任务准备好，则默认选择空闲任务
+    }
+
+    // 检查堆栈溢出警告
+    if (select_plus->signature != TASK_SIGNATURE)
+        printk("warning: kernel stack of task #%d overflow!!!", select_plus->tid);
 
     g_resched = 0;
-    switch_to(select);
+    switch_to(select_plus); // 切换到选择的任务
 }
 
 /**
@@ -77,19 +88,22 @@ void sleep_on(struct wait_queue **head)
     g_task_running->state = TASK_STATE_WAITING;
     schedule();
 
-    if(*head == &wait)
+    if (*head == &wait)
         *head = wait.next;
-    else {
+    else
+    {
         struct wait_queue *p, *q;
         p = *head;
-        do {
+        do
+        {
             q = p;
             p = p->next;
-            if(p == &wait) {
+            if (p == &wait)
+            {
                 q->next = p->next;
                 break;
             }
-        } while(p != NULL);
+        } while (p != NULL);
     }
 }
 
@@ -103,56 +117,61 @@ void wake_up(struct wait_queue **head, int n)
 {
     struct wait_queue *p;
 
-    for(p = *head; (p!=NULL) && n; p = p->next, n--)
+    for (p = *head; (p != NULL) && n; p = p->next, n--)
         p->tsk->state = TASK_STATE_READY;
 }
 
-static
-void add_task(struct tcb *tsk)
+static void add_task(struct tcb *tsk)
 {
-    if(g_task_head == NULL)
+    if (g_task_head == NULL)
         g_task_head = tsk;
-    else {
+    else
+    {
         struct tcb *p, *q;
         p = g_task_head;
-        do {
+        do
+        {
             q = p;
             p = p->next;
-        } while(p != NULL);
+        } while (p != NULL);
         q->next = tsk;
     }
 }
 
-static
-void remove_task(struct tcb *tsk)
+static void remove_task(struct tcb *tsk)
 {
-    if(g_task_head != NULL) {
-        if(tsk == g_task_head) {
+    if (g_task_head != NULL)
+    {
+        if (tsk == g_task_head)
+        {
             g_task_head = g_task_head->next;
-        } else {
+        }
+        else
+        {
             struct tcb *p, *q;
             p = g_task_head;
-            do {
+            do
+            {
                 q = p;
                 p = p->next;
-                if(p == tsk)
+                if (p == tsk)
                     break;
-            } while(p != NULL);
+            } while (p != NULL);
 
-            if(p == tsk)
+            if (p == tsk)
                 q->next = p->next;
         }
     }
 }
 
-static
-struct tcb* get_task(int tid)
+static struct tcb *get_task(int tid)
 {
     struct tcb *tsk;
 
     tsk = g_task_head;
-    while(tsk != NULL) {
-        if(tsk->tid == tid)
+    while (tsk != NULL)
+    {
+        if (tsk->tid == tid)
             break;
         tsk = tsk->next;
     }
@@ -165,32 +184,37 @@ struct tcb* get_task(int tid)
  *
  * 创建一个新的线程，该线程执行func函数，并向新线程传递参数pv
  */
+
 struct tcb *sys_task_create(void *tos,
                             void (*func)(void *pv), void *pv)
 {
+
     static int tid = 0;
     struct tcb *new;
     char *p;
     uint32_t flags;
-    uint32_t ustack=(uint32_t)tos;
+    uint32_t ustack = (uint32_t)tos;
 
-    if(ustack & 3)
+    if (ustack & 3)
         return NULL;
 
     p = (char *)kmemalign(PAGE_SIZE, PAGE_SIZE);
-    if(p == NULL)
+    if (p == NULL)
         return NULL;
 
     new = (struct tcb *)p;
 
     memset(new, 0, sizeof(struct tcb));
 
-    new->kstack = (uint32_t)(p+PAGE_SIZE);
+    new->kstack = (uint32_t)(p + PAGE_SIZE);
     new->tid = tid++;
     new->state = TASK_STATE_READY;
     new->timeslice = TASK_TIMESLICE_DEFAULT;
     new->wq_exit = NULL;
     new->next = NULL;
+    new->estcpu = 0;
+    new->priority = 0;
+    new->nice = 0;
     new->signature = TASK_SIGNATURE;
 
     /*XXX - should be elsewhere*/
@@ -222,7 +246,7 @@ void sys_task_exit(int code_exit)
     g_task_running->code_exit = code_exit;
     g_task_running->state = TASK_STATE_ZOMBIE;
 
-    if(g_task_own_fpu == g_task_running)
+    if (g_task_own_fpu == g_task_running)
         g_task_own_fpu = NULL;
 
     schedule();
@@ -239,28 +263,30 @@ int sys_task_wait(int tid, int *pcode_exit)
     uint32_t flags;
     struct tcb *tsk;
 
-    if(g_task_running == NULL)
+    if (g_task_running == NULL)
         return -1;
 
-    if(tid == 0)
+    if (tid == 0)
         return -1;
 
     save_flags_cli(flags);
 
-    if((tsk = get_task(tid)) == NULL) {
+    if ((tsk = get_task(tid)) == NULL)
+    {
         restore_flags(flags);
         return -1;
     }
 
-    if(tsk->state != TASK_STATE_ZOMBIE)
+    if (tsk->state != TASK_STATE_ZOMBIE)
         sleep_on(&tsk->wq_exit);
 
-    if(pcode_exit != NULL)
-        *pcode_exit= tsk->code_exit;
+    if (pcode_exit != NULL)
+        *pcode_exit = tsk->code_exit;
 
-    if(tsk->wq_exit == NULL) {
+    if (tsk->wq_exit == NULL)
+    {
         remove_task(tsk);
-        //printk("%d: Task %d reaped\r\n", sys_task_getid(), tsk->tid);
+        // printk("%d: Task %d reaped\r\n", sys_task_getid(), tsk->tid);
         restore_flags(flags);
 
         kfree(tsk);
@@ -271,6 +297,7 @@ int sys_task_wait(int tid, int *pcode_exit)
     return 0;
 }
 
+
 /**
  * 系统调用task_getid的执行函数
  *
@@ -278,7 +305,7 @@ int sys_task_wait(int tid, int *pcode_exit)
  */
 int sys_task_getid()
 {
-    return (g_task_running==NULL)?-1:g_task_running->tid;
+    return (g_task_running == NULL) ? -1 : g_task_running->tid;
 }
 
 /**
@@ -307,5 +334,5 @@ void init_task()
     /*
      * 创建线程task0，即系统空闲线程
      */
-    task0 = sys_task_create(NULL, NULL/*task0执行的函数将由run_as_task0填充*/, NULL);
+    task0 = sys_task_create(NULL, NULL /*task0执行的函数将由run_as_task0填充*/, NULL);
 }

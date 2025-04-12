@@ -22,7 +22,7 @@
 
 #define SYSCALL_task_exit     1
 #define SYSCALL_task_create   2
-#define SYSCALL_task_getid    3
+#define SYSCALL_task_    3
 #define SYSCALL_task_yield    4
 #define SYSCALL_task_wait     5
 #define SYSCALL_reboot        6
@@ -30,7 +30,9 @@
 #define SYSCALL_munmap        8
 #define SYSCALL_sleep         9
 #define SYSCALL_nanosleep     10
-
+#define SYSCALL_getpriority   11
+#define SYSCALL_setpriority   12
+#define SYSCALL_task_getid    13
 #define SYSCALL_beep          181
 #define SYSCALL_vm86          182
 #define SYSCALL_recv          183

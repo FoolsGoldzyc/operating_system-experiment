@@ -708,6 +708,12 @@ void syscall(struct context *ctx)
     // printk("task #%d syscalling #%d.\r\n", sys_task_getid(), ctx->eax);
     switch (ctx->eax)
     {
+    case SYSCALL_getpriority:
+            ctx->eax = getpriority(*(int *)(ctx->esp + 4));
+            break;
+    case SYSCALL_setpriority:
+            ctx->eax = setpriority(*(int *)(ctx->esp + 4), *(int *)(ctx->esp + 8));
+            break;
     case SYSCALL_task_exit:
         sys_task_exit(*((int *)(ctx->esp + 4)));
         break;
@@ -900,6 +906,67 @@ time_t sys_time()
     time_t performance_time = g_timer_ticks/HZ;
     time_t current_time = g_startup_time + performance_time;
     return current_time;
+}
+/* 增加系统调用
+int getpriority(int tid)成功返回线程tid的(nice+NZERO)，失败返回-1
+int setpriority(int tid, int prio),把线程tid的nice设为(prio-NZERO)
+prio必须在[0,2*NZERO-1]内,成功返回0，失败返回-1
+
+*/
+
+static struct tcb *get_task(int tid)
+{
+    struct tcb *tsk;
+
+    tsk = g_task_head;
+    while (tsk != NULL)
+    {
+        if (tsk->tid == tid)
+            break;
+        tsk = tsk->next;
+    }
+
+    return tsk;
+}
+
+int getpriority(int tid)
+{
+    if(tid == 0) return g_task_running->nice +NZERO;
+    uint32_t flags;
+    struct tcb *tsk = NULL;
+    save_flags_cli(flags);
+
+   
+    int priority = tsk->nice + NZERO;
+    restore_flags(flags);
+    return priority;
+}
+
+int setpriority(int tid, int prio) {
+    if (prio < 0 || prio >= 2 * NZERO) {
+        return -1; // prio不在有效范围内
+    }
+
+    uint32_t flags;
+    struct tcb *tsk;
+
+    if (tid == 0) {
+        save_flags_cli(flags);
+        g_task_running->nice = prio - NZERO;
+        restore_flags(flags);
+        return 0;
+    }
+
+    save_flags_cli(flags);
+    tsk = get_task(tid); // 根据tid获取线程
+    if (tsk == NULL) {
+        restore_flags(flags);
+        return -1;
+    }
+
+    tsk->nice = prio - NZERO;
+    restore_flags(flags);
+    return 0;
 }
 /**
  * page fault处理函数。

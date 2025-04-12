@@ -24,7 +24,12 @@
 #include <inttypes.h>
 #include <time.h>
 #include "machdep.h"
+#include "fixedptc.h"
 
+/* 定义NZERO，用于线程优先级nice值的范围 */
+#define NZERO 20
+#define PRI_USER_MIN 0
+#define PRI_USER_MAX 127
 /*中断向量表*/
 extern void (*g_intr_vector[])(uint32_t irq, struct context *ctx);
 
@@ -45,6 +50,7 @@ extern time_t g_startup_time;
 
 time_t mktime(struct tm *tm);
 
+extern fixedpt g_load_avg;
 /**
  * 线程控制块
  *
@@ -73,7 +79,9 @@ time_t mktime(struct tm *tm);
 struct tcb {
     /*hardcoded*/
     uint32_t    kstack;      /*saved top of the kernel stack for this task*/
-
+    int         nice;
+    int         estcpu;      /* 最近使用的 CPU 时间 */
+    int         priority;    /* 动态优先级 */
     int         tid;         /* task id */
     int         state;       /* -1:waiting,0:running,1:ready,2:zombie */
 #define TASK_STATE_WAITING  -1
@@ -163,7 +171,10 @@ void        sys_task_exit(int code_exit);
 int         sys_task_wait(int tid, int *pcode_exit);
 int         sys_task_getid();
 void        sys_task_yield();
-
+int getpriority(int tid);
+int setpriority(int tid, int prio);
+void timer_interrupt_handler();
+void  update_g_load_avg();
 int printk(const char *fmt,...);
 
 void     init_vmspace(uint32_t brk);
